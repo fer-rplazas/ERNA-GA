@@ -87,7 +87,7 @@ from setup_ui import setup_ui
 import Config
 import numpy as np
 import matplotlib.pyplot as plt
-from pylsl import StreamInlet, resolve_streams
+from mne_lsl.lsl import StreamInlet, resolve_streams
 import time
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -116,7 +116,7 @@ class StimulatorApp:
         self.root.columnconfigure(0, weight=1)
         self.root.columnconfigure(1, weight=1)
         
-        self.port = serial.Serial(Config.port, Config.BaudRate, timeout=0.1)
+        # self.port = serial.Serial(Config.port, Config.BaudRate, timeout=0.1)
         
         self.runstim = False
         self.receiving = False
@@ -151,7 +151,7 @@ class StimulatorApp:
                 try:
                     chunk, timestamps = self.inlet.pull_chunk(timeout=1)
                     #chunk, timestamps = self.inlet.pull_chunk(timeout=1.0, max_samples=4096)
-                    if chunk:
+                    if chunk.size > 0:
                         chunk_data = np.array(chunk).T  # shape: (channels, samples)
                         self.chunk_queue.put(chunk_data)
                         ch_idx = self.selected_channel_index
@@ -276,7 +276,6 @@ class StimulatorApp:
             # Use channel enable defaults (can be enhanced later)
             ch1_en = Config.ch1_en_ini
             ch2_en = Config.ch2_en_ini
-        
                 
             if mode == "Burst" and num_pulses!=1:
                 
@@ -465,16 +464,16 @@ class StimulatorApp:
         #streams = resolve_streams('name', self.selected_stream_name.get())
         #streams = resolve_streams(f"name='{self.selected_stream_name.get()}'")
         
-        streams=resolve_streams(wait_time=2.0);
-        
+        streams=resolve_streams(timeout=2.0, name=self.selected_stream_name.get());
         
         #time.sleep(0.5)
         self.inlet = StreamInlet(streams[0]);
-        info = self.inlet.info()
-        fs = int(info.nominal_srate())
-        n_channels = info.channel_count()
+        self.inlet.open_stream()
+        info = self.inlet.get_sinfo()
+        fs = int(info.sfreq)
+        n_channels = info.n_channels
         
-        self.console_log(f"✅ Connected to stream '{info.name()}' with {n_channels} channels @ {fs} Hz")
+        self.console_log(f"✅ Connected to stream '{info.name}' with {n_channels} channels @ {fs} Hz")
 
         #start plotting
         self.create_plot_canvas(fs)    
@@ -485,16 +484,42 @@ class StimulatorApp:
         self.receive_btn.config(state=tk.DISABLED)
         #self.detect_button.config(state=tk.DISABLED)
 
+        analysis_cfg = {
+            "freq": self.freq_var.get(),
+            "pw": self.pw_var.get(),
+            "gap": self.gap_var.get(),
+            "amp": self.amp_var.get(),
+            "burst_interval_default": self.burst_interval_var.get(),
+            "burst_interval_stim": self.BstInter_var.get(),
+            "num_pulses": self.num_pulses_var.get(),
+            "mode": self.mode_var.get(),
+            "file_name": self.file_name_var.get(),
+            "ta_erna": float(self.ta_erna.get()),
+            "tb_erna": float(self.tb_erna.get()),
+            "ta_plot": float(self.ta_var.get()),
+            "tb_plot": float(self.tb_var.get()),
+            "ya_plot": float(self.ya_var.get()),
+            "yb_plot": float(self.yb_var.get()),
+            "selected_channel": self.selected_channel_name.get() if hasattr(self, "selected_channel_name") else "unknown",
+            "bp_filter_applied": self.bp_filter_var.get() if hasattr(self, "bp_filter_var") else False,
+            "bp_low": float(self.bp_f1.get()) if hasattr(self, "bp_f1") else 0.0,
+            "bp_high": float(self.bp_f2.get()) if hasattr(self, "bp_f2") else 0.0,
+            "bp_order": int(self.bp_n.get()) if hasattr(self, "bp_n") else 2,
+            "arti_amp": int(self.arti_amp_var.get()) if hasattr(self, "arti_amp_var") else int(Config.arti_amp),
+            "rectify": self.Rectify_var.get() if hasattr(self, "Rectify_var") else False,
+        }
+
         # ERNA Detection
         def receive_loop():
             try:
-                info = self.inlet.info()
-                fs = int(info.nominal_srate())
+                info = self.inlet.get_sinfo()
+                fs = int(info.sfreq)
         
                 self.save_folder = os.path.join(os.getcwd(), "GA_LSL_Chunks")
+                os.makedirs(self.save_folder, exist_ok=True)
         
                 receive_chunks(self,log,self.chunk_queue,fs,lambda: self.receiving,
-                    save_dir=self.save_folder,gen=generation,ind=individual,info=info)
+                    save_dir=self.save_folder,gen=generation,ind=individual,info=info,analysis_cfg=analysis_cfg)
             finally:
                 self.console_log("✅ Finished ERNA analysis.")
     
@@ -511,11 +536,17 @@ class StimulatorApp:
         self.file_name_entry.config(state='normal')
         #self.detect_button.config(state=tk.NORMAL)
 
-    def console_log(self, message):
+    def _append_console_log(self, message):
         print(message)  # Console
         self.log_lines = (self.log_lines + [message])[-6:]
         self.log_label.config(text="\n".join(self.log_lines))
         self.log_history.append(message)
+
+    def console_log(self, message):
+        if threading.current_thread() is threading.main_thread():
+            self._append_console_log(message)
+        else:
+            self.root.after(0, lambda msg=message: self._append_console_log(msg))
 
     def create_plot_canvas(self, fs):
 
@@ -533,14 +564,14 @@ class StimulatorApp:
         self.ax.set_xlim([0, Config.ws])
         self.ax.set_ylim([-1, 1])
         self.ax.grid(True)
-        #self.ax.set_xlabel("t (s)", fontname='Segoe UI',fontsize=9)
-        self.ax.set_ylabel("Amp (µA)", fontname='Segoe UI',fontsize=self.fonts_label)
+        #self.ax.set_xlabel("t (s)", fontname='Helvetica',fontsize=9)
+        self.ax.set_ylabel("Amp (µA)", fontname='Helvetica',fontsize=self.fonts_label)
         
         for label in self.ax.get_xticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         for label in self.ax.get_yticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
             
         self.fig.subplots_adjust(left=0.12, right=0.98, top=0.95, bottom=0.2)
@@ -549,7 +580,7 @@ class StimulatorApp:
         self.plot_line, = self.ax.plot(np.linspace(0, Config.ws, fs * Config.ws), self.plot_data, color='blue')
         self.threshold_line = self.ax.plot(np.linspace(0, Config.ws, fs * Config.ws),
             [Config.arti_amp] * int(fs * Config.ws),color='red',linestyle='--',label='Threshold')[0]
-        #self.ax.legend(loc='upper right', prop={'family': 'Segoe UI', 'size': 9})
+        #self.ax.legend(loc='upper right', prop={'family': 'Helvetica', 'size': 9})
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_raw)
         canvas_widget = self.canvas.get_tk_widget()
@@ -576,13 +607,13 @@ class StimulatorApp:
         self.event_ax.grid(True)
         self.event_ax.set_facecolor('none')
         
-        #self.event_ax.set_xlabel("t (s)", fontname='Segoe UI',fontsize=9)
-        self.event_ax.set_ylabel("Amp (µA)", fontname='Segoe UI',fontsize=self.fonts_label)
+        #self.event_ax.set_xlabel("t (s)", fontname='Helvetica',fontsize=9)
+        self.event_ax.set_ylabel("Amp (µA)", fontname='Helvetica',fontsize=self.fonts_label)
         for label in self.event_ax.get_xticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         for label in self.event_ax.get_yticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         self.event_fig.subplots_adjust(left=0.12, right=0.97, top=0.95, bottom=0.15)
         
@@ -612,13 +643,13 @@ class StimulatorApp:
         self.amp_ax.grid(True)
         self.amp_ax.set_facecolor('none')
         
-        #self.event_ax.set_xlabel("t (s)", fontname='Segoe UI',fontsize=9)
-        self.amp_ax.set_ylabel("Amp (µA)", fontname='Segoe UI',fontsize=self.fonts_label)
+        #self.event_ax.set_xlabel("t (s)", fontname='Helvetica',fontsize=9)
+        self.amp_ax.set_ylabel("Amp (µA)", fontname='Helvetica',fontsize=self.fonts_label)
         for label in self.amp_ax.get_xticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         for label in self.amp_ax.get_yticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         self.amp_fig.subplots_adjust(left=0.15, right=0.98, top=0.95, bottom=0.17)
         
@@ -632,8 +663,6 @@ class StimulatorApp:
         self.plot_amp.rowconfigure(0, weight=1)
         self.plot_amp.columnconfigure(0, weight=1)
         self.plot_amp.grid_propagate(False)
-         
-        
         
     
     def update_event_plot(self):
@@ -658,13 +687,13 @@ class StimulatorApp:
     
         self.event_ax.set_xlim(-ta, tb)
         self.event_ax.set_ylim(-ya, yb)
-        self.event_ax.set_ylabel("Amp (µA)", fontname='Segoe UI', fontsize=self.fonts_label)
+        self.event_ax.set_ylabel("Amp (µA)", fontname='Helvetica', fontsize=self.fonts_label)
     
         for label in self.event_ax.get_xticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         for label in self.event_ax.get_yticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
     
         if self.event_buffer:
@@ -753,13 +782,13 @@ class StimulatorApp:
         self.amp_ax.clear()
         self.amp_ax.grid(True)
         self.amp_ax.set_facecolor('none')
-        self.amp_ax.set_ylabel("Amp (µA)", fontname='Segoe UI', fontsize=self.fonts_label)
+        self.amp_ax.set_ylabel("Amp (µA)", fontname='Helvetica', fontsize=self.fonts_label)
     
         for label in self.amp_ax.get_xticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
         for label in self.amp_ax.get_yticklabels():
-            label.set_fontname("Segoe UI")
+            label.set_fontname("Helvetica")
             label.set_fontsize(self.fonts_label)
     
         if self.amp_erna_list:
@@ -799,6 +828,33 @@ class StimulatorApp:
     
         self.amp_canvas.draw()
 
+    def _show_ga_progress_plot(self, gen, current_individual, previous_individuals):
+        """Render GA scatter plot on the Tk main thread."""
+        try:
+            fig = plt.figure(figsize=(6, 5))
+            ax = fig.add_subplot(111)
+            ax.set_title(f"Generation {gen} - Individuals (2D)")
+            ax.set_xlabel("Frequency (Hz)")
+            ax.set_ylabel("Pulse Width (µs)")
+
+            # Keep axes stable across individuals.
+            ax.set_xlim(90, 145)
+            ax.set_ylim(20, 100)
+
+            if previous_individuals:
+                prev = np.array(previous_individuals)
+                ax.scatter(prev[:, 0], prev[:, 1], c='gray', label="Previous")
+                ax.plot(prev[:, 0], prev[:, 1], c='gray', linewidth=1)
+
+            ax.scatter(current_individual[0], current_individual[1], c='red', s=50, label="Current")
+            ax.legend()
+            fig.tight_layout()
+
+            plt.show(block=False)
+            self.root.after(1500, lambda f=fig: plt.close(f))
+        except Exception as e:
+            print(f"[2D PLOT ERROR] {e}")
+
     
     def start_ga_process(self):
         def ga_loop():
@@ -810,34 +866,12 @@ class StimulatorApp:
                 ind = params['individual']
                 current_individual = (params['freq'], params['pw'], params['amp'])
     
-                # === 2D Plot ===
-                try:
-                    fig = plt.figure(figsize=(6, 5))
-                    ax = fig.add_subplot(111)
-                    ax.set_title(f"Generation {gen} - Individuals (2D)")
-                    ax.set_xlabel("Frequency (Hz)")
-                    ax.set_ylabel("Pulse Width (µs)")
-                
-                    # === Fixed axis limits ===
-                    ax.set_xlim(90, 145)     # Frequency range
-                    ax.set_ylim(20, 100)     # Pulse width range
-                
-                    # Gray for previous gens (2D projection: dropping amplitude)
-                    if all_prev_individuals:
-                        prev = np.array(all_prev_individuals)
-                        ax.scatter(prev[:, 0], prev[:, 1], c='gray', label="Previous")
-                        ax.plot(prev[:, 0], prev[:, 1], c='gray', linewidth=1)
-                
-                    # Red for current individual (2D projection)
-                    ax.scatter(current_individual[0], current_individual[1], c='red', s=50, label="Current")
-                
-                    ax.legend()
-                    plt.tight_layout()
-                    plt.show(block=False)
-                    plt.pause(1.5)
-                    plt.close(fig)
-                except Exception as e:
-                    print(f"[2D PLOT ERROR] {e}")
+                prev_snapshot = list(all_prev_individuals)
+                self.root.after(
+                    0,
+                    lambda g=gen, cur=current_individual, prev=prev_snapshot:
+                        self._show_ga_progress_plot(g, cur, prev)
+                )
     
                 # Store for next gen
                 all_prev_individuals.append(current_individual)
@@ -972,7 +1006,9 @@ class StimulatorApp:
                 print('*******************************')
                 
                 streams = resolve_streams();
-                self.detected_streams = [s.name() for s in streams];
+                self.streams = streams
+                print(streams)
+                self.detected_streams = [s.name for s in streams];
                 if not self.detected_streams:
                     self.console_log("⚠️ No streams found.");
                     return
@@ -1002,17 +1038,23 @@ class StimulatorApp:
             #streams = resolve_streams('name', stream_name)
             #streams = resolve_streams(f"name='{self.selected_stream_name.get()}'")
             
-            streams=resolve_streams(wait_time=2.0);
+            stream_names = [s.name for s in self.streams]
+            selected_stream_idx = stream_names.index(stream_name)
+            if selected_stream_idx == -1:
+                raise ValueError(f"Stream '{stream_name}' not found.")
+
+            streams=resolve_streams(timeout=2.0);
             if not streams:
                 self.console_log(f"⚠️ Stream '{stream_name}' not found.")
                 return
     
             inlet = StreamInlet(streams[0])
-            info = inlet.info()
-            ch_info = info.desc().child("channels").child("channel")
+            inlet.open_stream()
+            info = inlet.get_sinfo()
+            ch_info = info.desc.child("channels").child("channel")
     
             self.detected_channels = []
-            for _ in range(info.channel_count()):
+            for _ in range(info.n_channels):
                 self.detected_channels.append(ch_info.child_value("label"))
                 ch_info = ch_info.next_sibling()
     

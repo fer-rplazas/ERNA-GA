@@ -4,7 +4,7 @@ from PIL import Image, ImageTk
 import Config
 
 def setup_ui(self):
-    self.font_seg='Segoe UI'
+    self.font_seg='Helvetica'
     self.font_s=9
     self.log_history=[]
     ta_erna_ini=0.003

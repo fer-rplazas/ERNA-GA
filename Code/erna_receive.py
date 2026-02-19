@@ -1,11 +1,13 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from pylsl import StreamInlet, resolve_streams
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from mne_lsl.lsl import StreamInlet, resolve_streams
 from scipy.signal import find_peaks
 import Config
 from scipy.io import savemat
 import os
 import datetime
+import threading
 #from scipy.interpolate import interp1d
 from scipy.signal import find_peaks
 from scipy.signal import butter, iirnotch, filtfilt
@@ -18,8 +20,11 @@ def DC_remove(signal):
     signal2=signal-np.mean(signal)
     return signal2
         
-def event_detect_pair(self,signal, fs):
-    n_samples = int(self.ta_erna.get() * fs)#self.ta_erna.get(): this is also used to detect rising edge of paired pulse stimulation
+def event_detect_pair(self, signal, fs, min_interval_sec=None):
+    if min_interval_sec is None:
+        n_samples = int(self.ta_erna.get() * fs)  # default path for legacy callers
+    else:
+        n_samples = int(float(min_interval_sec) * fs)
 
     rising_edges = np.where((signal[1:] > Config.arti_amp) & (signal[:-1] <= Config.arti_amp))[0] + 1
 
@@ -143,12 +148,23 @@ def erna_check2(sig, fs, trig, lag_min, lag_max, time_axis):
 
     return amp_pos1, amp_neg1, amp_pos2, time_pos1, time_neg1, time_pos2, lag, f_erna, erna_latency
 
-def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None, gen=None, ind=None, info=None):
+def _show_or_save_figure(fig, console_log, save_path=None, suffix="plot"):
+    fig.tight_layout()
+
+    if save_path is not None:
+        plot_path = f"{save_path}{suffix}.png"
+    else:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        plot_path = os.path.join(os.getcwd(), f"{suffix}_{timestamp}.png")
+
+    fig.savefig(plot_path, dpi=150)
+    console_log(f"✅ Saved plot image: {plot_path}")
+
+def receive_chunks(self, console_log, chunk_queue, fs, is_running, save_dir=None, gen=None, ind=None, info=None, analysis_cfg=None):
     buffer = []
 
     console_log("✅ >>> Start to receive chunks ...")
 
-    
     got_first_chunk = False
 
     while is_running():
@@ -163,7 +179,7 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
             if not hasattr(self, '_total_samples'):
                 self._total_samples = 0
             
-            n_chunk_samples = chunk_data.shape[1]
+            n_chunk_samples = chunk_data.shape[0]
             self._total_samples += n_chunk_samples
             total_duration = self._total_samples / fs
             
@@ -171,8 +187,10 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
             # Update status_receive_var instead of printing
             if hasattr(self, 'status_receive_var'):
                 msg = f" Received Samples:\n • New chunk: {n_chunk_samples} \n • Total: {self._total_samples} \n • Duration: {total_duration:.2f} s"
-                self.status_receive_var.set(msg)
-            
+                if hasattr(self, "root") and threading.current_thread() is not threading.main_thread():
+                    self.root.after(0, lambda m=msg: self.status_receive_var.set(m))
+                else:
+                    self.status_receive_var.set(msg)
             
         except Exception:
             if not is_running():
@@ -185,7 +203,38 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
         console_log("No chunks received.")
         return
     
-    
+    cfg = analysis_cfg or {}
+
+    def _get_cfg(key, fallback_fn):
+        if key in cfg:
+            return cfg[key]
+        return fallback_fn()
+
+    freq_val = _get_cfg("freq", lambda: self.freq_var.get())
+    pw_val = _get_cfg("pw", lambda: self.pw_var.get())
+    gap_val = _get_cfg("gap", lambda: self.gap_var.get())
+    amp_val = _get_cfg("amp", lambda: self.amp_var.get())
+    burst_interval_default_val = _get_cfg("burst_interval_default", lambda: self.burst_interval_var.get())
+    burst_interval_stim_val = _get_cfg("burst_interval_stim", lambda: self.BstInter_var.get())
+    num_pulses_val = _get_cfg("num_pulses", lambda: self.num_pulses_var.get())
+    mode_val = _get_cfg("mode", lambda: self.mode_var.get())
+    file_name_val = _get_cfg("file_name", lambda: self.file_name_var.get())
+    ta_erna_val = float(_get_cfg("ta_erna", lambda: self.ta_erna.get()))
+    tb_erna_val = float(_get_cfg("tb_erna", lambda: self.tb_erna.get()))
+    ta_plot_val = float(_get_cfg("ta_plot", lambda: self.ta_var.get()))
+    tb_plot_val = float(_get_cfg("tb_plot", lambda: self.tb_var.get()))
+    ya_plot_val = float(_get_cfg("ya_plot", lambda: self.ya_var.get()))
+    yb_plot_val = float(_get_cfg("yb_plot", lambda: self.yb_var.get()))
+    selected_channel_val = _get_cfg(
+        "selected_channel",
+        lambda: self.selected_channel_name.get() if hasattr(self, "selected_channel_name") else "unknown"
+    )
+    bp_applied = bool(_get_cfg("bp_filter_applied", lambda: self.bp_filter_var.get() if hasattr(self, "bp_filter_var") else False))
+    bp_low_val = float(_get_cfg("bp_low", lambda: self.bp_f1.get() if hasattr(self, "bp_f1") else 0.0))
+    bp_high_val = float(_get_cfg("bp_high", lambda: self.bp_f2.get() if hasattr(self, "bp_f2") else 0.0))
+    bp_order_val = int(_get_cfg("bp_order", lambda: self.bp_n.get() if hasattr(self, "bp_n") else 2))
+    arti_amp_val = int(_get_cfg("arti_amp", lambda: self.arti_amp_var.get() if hasattr(self, "arti_amp_var") else Config.arti_amp))
+    rectify_enabled = bool(_get_cfg("rectify", lambda: self.Rectify_var.get() if hasattr(self, "Rectify_var") else False))
 
     # === Save Data ===
     t_before, t_after = Config.t_before, Config.t_after
@@ -197,11 +246,11 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
     
         # === Get channel names ===
         try:
-            ch_info = info.desc().child("channels").child("channel")
-            self.ch_names = []
-            for _ in range(info.channel_count()):
-                self.ch_names.append(ch_info.child_value("label"))
-                ch_info = ch_info.next_sibling()
+            self.ch_names = info.get_channel_names()
+            # self.ch_names = []
+            # for _ in range(info.channel_count()):
+            #     self.ch_names.append(ch_info.child_value("label"))
+            #     ch_info = ch_info.next_sibling()
         except:
             self.ch_names = [f"undefined{i+1}" for i in range(raw_data.shape[1])]
             
@@ -219,53 +268,50 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
         save_dict = {
             'data': cell_array,#***********************************#***********************************
             'SR': fs,
-            'threshold': Config.arti_amp,
+            'threshold': arti_amp_val,
             'timestamp': current_time,
             #'gen': gen,
             #'ind': ind,
         
             # Stimulation parameters from GA individual
-            "freq": self.freq_var.get(),
-            "pw": self.pw_var.get(),
-            "gap": self.gap_var.get(),
-            "amp": self.amp_var.get(),
-            "burst_interval_default": self.burst_interval_var.get(),
-            "burst_interval_stim": self.BstInter_var.get(),
-            "num_pulses": self.num_pulses_var.get(),
+            "freq": freq_val,
+            "pw": pw_val,
+            "gap": gap_val,
+            "amp": amp_val,
+            "burst_interval_default": burst_interval_default_val,
+            "burst_interval_stim": burst_interval_stim_val,
+            "num_pulses": num_pulses_val,
         }
         
-        if self.mode_var.get() == 'GA':  
+        if mode_val == 'GA':  
             save_dict['gen'] = gen
             save_dict['ind'] = ind
-            save_path = os.path.join(save_dir,self.file_name_var.get()+f"_Gen{gen:02d}_Ind{ind:02d}_")
+            save_path = os.path.join(save_dir, file_name_val + f"_Gen{gen:02d}_Ind{ind:02d}_")
         else:
-            save_path = os.path.join(save_dir, self.file_name_var.get()+'_')
-        
+            save_path = os.path.join(save_dir, file_name_val + '_')
         
         
         # === Advanced Config Save ===
         save_dict.update({
-            "ta_erna": float(self.ta_erna.get()),
-            "tb_erna": float(self.tb_erna.get()),
-            "ta_plot": float(self.ta_var.get()),
-            "tb_plot": float(self.tb_var.get()),
-            "ya_plot": float(self.ya_var.get()),
-            "yb_plot": float(self.yb_var.get()),
+            "ta_erna": ta_erna_val,
+            "tb_erna": tb_erna_val,
+            "ta_plot": ta_plot_val,
+            "tb_plot": tb_plot_val,
+            "ya_plot": ya_plot_val,
+            "yb_plot": yb_plot_val,
             "t_before": float(t_before),
             "t_after": float(t_after),
             'dc_rem_start': float(dc_rem_start),
             'dc_rem_end': float(dc_rem_end),
-            "selected_channel": self.selected_channel_name.get() if hasattr(self, 'selected_channel_name') else "unknown"
+            "selected_channel": selected_channel_val
         })
         
-        
         # Bandpass filter info
-        bp_applied = self.bp_filter_var.get() if hasattr(self, 'bp_filter_var') else False
         save_dict["bp_filter_applied"] = bp_applied
         if bp_applied:
-            save_dict["bp_low"] = float(self.bp_f1.get())
-            save_dict["bp_high"] = float(self.bp_f2.get())
-            save_dict["bp_order"] = int(self.bp_n.get())
+            save_dict["bp_low"] = bp_low_val
+            save_dict["bp_high"] = bp_high_val
+            save_dict["bp_order"] = bp_order_val
             
         savemat(save_path+'full.mat', save_dict)#*******************************************************************
         console_log(f"✅ Saved raw LSL data.")
@@ -289,10 +335,10 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
     #ch_num = np.argmax(amp_array)
  
     signal = DC_remove(received_data[self.selected_channel_index]) 
-    if hasattr(self, 'Rectify_var') and self.Rectify_var.get():
+    if rectify_enabled:
         signal = rectify_sig(signal)
 
-    rising_edges = event_detect_pair(self, signal, fs)
+    rising_edges = event_detect_pair(self, signal, fs, min_interval_sec=ta_erna_val)
   
     trigger_times = rising_edges / fs
     n_events = len(trigger_times)
@@ -300,15 +346,15 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
 
     
     st_dc_rem = True
-    lag_min, lag_max = float(self.ta_erna.get()), float(self.tb_erna.get())
+    lag_min, lag_max = ta_erna_val, tb_erna_val
     #tx_show1, tx_show2 = -0.01, 0.025
     n_samples_seg = int((t_before + t_after) * fs)
     time_axis = np.linspace(-t_before, t_after, n_samples_seg)
     segments = np.zeros((len(channel_indices), n_events, n_samples_seg))
     
     # === Setup for unified Y-axis across channels ===
-    apply_bp = hasattr(self, 'bp_filter_var') and self.bp_filter_var.get()
-    fa, fb, order = self.bp_f1.get(), self.bp_f2.get(), self.bp_n.get()
+    apply_bp = bp_applied
+    fa, fb, order = bp_low_val, bp_high_val, bp_order_val
     idx1 = int((t_before + lag_min) * fs)
     idx2 = int((t_before + lag_max) * fs)
     
@@ -359,7 +405,7 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
     
         avg_trace = np.mean(filtered_segments, axis=0)
         filtered_avg_traces.append(avg_trace)
-    
+        
         erna_window = avg_trace[idx1:idx2]
         local_min = np.min(erna_window)
         local_max = np.max(erna_window)
@@ -368,20 +414,22 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
             global_min = local_min
         if global_max is None or local_max > global_max:
             global_max = local_max
- 
-    margin = 0.3 * (global_max - global_min) if global_max != global_min else 1
+
+    margin = 0.7 * (global_max - global_min) if global_max != global_min else 1
     ymin = global_min - margin
     ymax = global_max + margin
- 
-
 
     #plot each channel
-    fig, axs = plt.subplots(len(channel_indices), 1, figsize=(6, 1.2 * len(channel_indices)))
+    fig = Figure(figsize=(7, 1.6 * len(channel_indices)))
+    FigureCanvasAgg(fig)
+    axs = fig.subplots(len(channel_indices), 1, sharex=True, sharey=True)
     if len(channel_indices) == 1:
         axs = [axs]
     erna_results = []
     for i, ax in enumerate(axs):
-        ax.set_title(self.ch_names[channel_indices[i]])
+        ax.set_ylabel(self.ch_names[channel_indices[i]])
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         avg_trace = filtered_avg_traces[i]
     
         for ev in range(n_events):
@@ -392,11 +440,11 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
     
         ax.plot(time_axis, avg_trace, 'r', lw=2)
     
-        arti = int(self.arti_amp_var.get())
-        ax.plot([lag_min, lag_min], [-arti, arti], 'm--', linewidth=2)
-        ax.plot([lag_max, lag_max], [-arti, arti], 'm--', linewidth=2)
+        arti = arti_amp_val
+        ax.plot([lag_min, lag_min], [-arti, arti], 'm--', linewidth=1)
+        ax.plot([lag_max, lag_max], [-arti, arti], 'm--', linewidth=1)
     
-        ax.set_xlim([-float(self.ta_var.get()), float(self.tb_var.get())])
+        ax.set_xlim([-ta_plot_val/2, tb_plot_val/3])
         ax.set_ylim([ymin, ymax])
         ax.grid(True)
     
@@ -410,6 +458,7 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
             ax.plot(t1, amp_pos1, 'ro')
             ax.plot(t2, amp_neg1, 'bo')
             ax.plot(t3, amp_pos2, 'go')
+            ax.text(t1, (amp_pos1 - amp_neg1)*1.1, f"{amp_pos1 - amp_neg1:.1f}", fontsize=16, color='red')
             erna_results.append({
                 "channel": self.ch_names[channel_indices[i]],
                 "diff": amp_pos1 - amp_neg1,
@@ -418,8 +467,12 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
                 "amp2": amp_neg1
             })
 
-    plt.tight_layout()
-    plt.show()
+    _show_or_save_figure(
+        fig,
+        console_log,
+        save_path if save_dir is not None else None,
+        suffix="erna_summary"
+    )
 
     if erna_results:
         sorted_results = sorted(erna_results, key=lambda x: x["diff"], reverse=True)
@@ -432,7 +485,9 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
         console_log("No ERNA detected.")
     
 
-    fig3, axs3 = plt.subplots(len(channel_indices), 1, figsize=(6, 1.2 * len(channel_indices)), sharex=True)
+    fig3 = Figure(figsize=(6, 1.2 * len(channel_indices)))
+    FigureCanvasAgg(fig3)
+    axs3 = fig3.subplots(len(channel_indices), 1, sharex=True)
     if len(channel_indices) == 1:
         axs3 = [axs3]
 
@@ -449,7 +504,7 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
             trace = segments[i, j, :]
 
             trace_for_check = trace.copy()
-            if hasattr(self, 'bp_filter_var') and self.bp_filter_var.get():
+            if apply_bp:
                 if 0 <= idx1 < idx2 <= len(trace_for_check):
                     filtered_section = bp_filter(trace_for_check[idx1:idx2], fs, fa, fb, order)
                     trace_for_check[idx1:idx2] = filtered_section
@@ -470,8 +525,12 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
             ax.set_ylim(0, ymax-ymin)
 
     axs3[-1].set_xlabel("Time (s)")
-    plt.tight_layout()
-    plt.show()
+    _show_or_save_figure(
+        fig3,
+        console_log,
+        save_path if save_dir is not None else None,
+        suffix="erna_amp_over_time"
+    )
     
     #savemat(os.path.join(save_dir, Config.f_name+'_segments.mat'), {'seg': segments})
     #console_log(f"✅ Saved unfiltered segments data.")
@@ -485,7 +544,7 @@ def receive_chunks(self,console_log, chunk_queue, fs, is_running, save_dir=None,
     if save_dir is not None:
         log_file_path = save_path+'log.txt'
         with open(save_path+'log.txt', 'w', encoding='utf-8') as f:
-            for line in self.log_history:
+            for line in list(self.log_history):
                 f.write(line + '\n')
         console_log(f"✅ Saved log to: {log_file_path}")
     
