@@ -25,7 +25,6 @@ def setup_ui(self):
     self.ta_erna.trace_add("write", lambda *_: (self.update_event_plot(),self.tb_erna_box.config(from_=min(float(self.ta_erna.get())+0.012,float(self.tb_erna.get()) - 0.012)  ) if hasattr(self, 'tb_erna_box') else None))
     self.tb_erna.trace_add("write", lambda *_: (self.update_event_plot(),self.ta_erna_box.config(to= max(float(self.tb_erna.get()) - 0.012,float(self.ta_erna.get())+0.012)) if hasattr(self, 'ta_erna_box') else None))
     
-    
     #frame 1: stream detection frame
     self.stream_detect_frame = tk.Frame(self.root)
     self.stream_detect_frame.grid(row=0, column=0, columnspan=6, pady=Config.ui_pad_y) 
@@ -34,19 +33,13 @@ def setup_ui(self):
     self.selected_stream_name = tk.StringVar()
     self.selected_detected_channel = tk.StringVar()
     
-    
     self.config_lsl_button = ttk.Button(self.stream_detect_frame, text="Config LSL", command=self.open_lsl_config_window)
     self.config_lsl_button.grid(row=0, column=0, padx=(8,2), pady=Config.ui_pad_y)
-
-
-
 
     # Only display the selected stream (label), no dropdown here
     ttk.Label(self.stream_detect_frame, text="Stream Name: ").grid(row=0, column=1, padx=(8, 2), pady=Config.ui_pad_y)
     self.stream_display_label = ttk.Label(self.stream_detect_frame, textvariable=self.selected_stream_name, width=20)
     self.stream_display_label.grid(row=0, column=2, pady=Config.ui_pad_y)
-    
-
     
     ttk.Label(self.stream_detect_frame, text="File Name").grid(row=0, column=4, padx=(12,0), pady=entry_pady)
     self.file_name_var = tk.StringVar(value='test')

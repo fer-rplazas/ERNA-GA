@@ -102,8 +102,6 @@ import pandas as pd
 from tkinter import ttk
 import sys
 
-
-
 class StimulatorApp:
     def __init__(self, root):
         self.chunk_queue = Queue()
@@ -143,6 +141,64 @@ class StimulatorApp:
         
         
         self.console_log(f'selected channel is changed to {ch_name}')
+
+    def _apply_axis_font(self, axis):
+        for label in axis.get_xticklabels():
+            label.set_fontname("Helvetica")
+            label.set_fontsize(self.fonts_label)
+        for label in axis.get_yticklabels():
+            label.set_fontname("Helvetica")
+            label.set_fontsize(self.fonts_label)
+
+    def _populate_option_menu(self, option_menu, variable, options, callback=None):
+        menu = option_menu['menu']
+        menu.delete(0, 'end')
+        for option in options:
+            command = tk._setit(variable, option, callback) if callback else tk._setit(variable, option)
+            menu.add_command(label=option, command=command)
+
+    def _build_analysis_cfg_snapshot(self):
+        return {
+            "freq": self.freq_var.get(),
+            "pw": self.pw_var.get(),
+            "gap": self.gap_var.get(),
+            "amp": self.amp_var.get(),
+            "burst_interval_default": self.burst_interval_var.get(),
+            "burst_interval_stim": self.BstInter_var.get(),
+            "num_pulses": self.num_pulses_var.get(),
+            "mode": self.mode_var.get(),
+            "file_name": self.file_name_var.get(),
+            "ta_erna": float(self.ta_erna.get()),
+            "tb_erna": float(self.tb_erna.get()),
+            "ta_plot": float(self.ta_var.get()),
+            "tb_plot": float(self.tb_var.get()),
+            "ya_plot": float(self.ya_var.get()),
+            "yb_plot": float(self.yb_var.get()),
+            "selected_channel": self.selected_channel_name.get() if hasattr(self, "selected_channel_name") else "unknown",
+            "bp_filter_applied": self.bp_filter_var.get() if hasattr(self, "bp_filter_var") else False,
+            "bp_low": float(self.bp_f1.get()) if hasattr(self, "bp_f1") else 0.0,
+            "bp_high": float(self.bp_f2.get()) if hasattr(self, "bp_f2") else 0.0,
+            "bp_order": int(self.bp_n.get()) if hasattr(self, "bp_n") else 2,
+            "arti_amp": int(self.arti_amp_var.get()) if hasattr(self, "arti_amp_var") else int(Config.arti_amp),
+            "rectify": self.Rectify_var.get() if hasattr(self, "Rectify_var") else False,
+        }
+
+    def _get_current_threshold(self):
+        try:
+            return int(self.arti_amp_var.get())
+        except ValueError:
+            return Config.arti_amp
+
+    def _compute_plot_ylim(self, data):
+        y_min = np.min(data)
+        y_max = np.max(data)
+        if y_min == y_max:
+            margin = abs(y_min) * 0.1 if y_min != 0 else 1
+            return y_min - margin, y_max + margin
+
+        max_abs = max(abs(y_min), abs(y_max))
+        margin = max_abs * 0.1
+        return -max_abs - margin, max_abs + margin
         
     def start_plotting_and_streaming(self):
 
@@ -171,36 +227,23 @@ class StimulatorApp:
                         # Update plot visuals (on UI thread)
                         def refresh_plot():
                             self.plot_line.set_ydata(self.plot_data)#****************************************
-         
-                            try:
-                                current_val = int(self.arti_amp_var.get())
-                            except ValueError:
-                                current_val = Config.arti_amp  # fallback if input is invalid
+
+                            current_val = self._get_current_threshold()
                             self.threshold_line.set_ydata([current_val] * len(self.plot_data))
 
-                            y_min = np.min(self.plot_data)
-                            y_max = np.max(self.plot_data)
-                            if y_min == y_max:
-                                margin = abs(y_min) * 0.1 if y_min != 0 else 1
-                                y_min -= margin
-                                y_max += margin
-                            else:
-                                max_abs = max(abs(y_min), abs(y_max))
-                                margin = max_abs * 0.1
-                                y_min = -max_abs - margin
-                                y_max = max_abs + margin
+                            y_min, y_max = self._compute_plot_ylim(self.plot_data)
                             self.ax.set_ylim([y_min, y_max])
                             #self.canvas.draw_idle()
                             self.canvas.draw()
                         self.root.after(0, refresh_plot)
                         # Push to queue for ERNA
-  
+
                         #below is for event plot
                         fs = self.fs
 
                         signal = DC_remove(chunk_data[ch_idx])
                         self.signal_buffer = np.concatenate((self.signal_buffer, signal))
-                         
+
                         ta = Config.ta_plot
                         tb = Config.tb_plot
                         n_before = int(ta * fs)
@@ -232,7 +275,7 @@ class StimulatorApp:
                     break
 
         self.runplot = True
-        self.plot_thread = threading.Thread(target=plotting_loop)
+        self.plot_thread = threading.Thread(target=plotting_loop, daemon=True)
         self.plot_thread.start()
     
     def setup_stimulator(self):
@@ -395,7 +438,7 @@ class StimulatorApp:
         #self.start_btn.config(state=tk.DISABLED)
         #self.stop_btn.config(state=tk.NORMAL)
         self.setup_stimulator() #
-        self.stim_thread = threading.Thread(target=self.stimulation_loop) #
+        self.stim_thread = threading.Thread(target=self.stimulation_loop, daemon=True) #
         self.stim_thread.start()
 
     def stop_stimulation(self):
@@ -464,10 +507,21 @@ class StimulatorApp:
         #streams = resolve_streams('name', self.selected_stream_name.get())
         #streams = resolve_streams(f"name='{self.selected_stream_name.get()}'")
         
-        streams=resolve_streams(timeout=2.0, name=self.selected_stream_name.get());
-        
+        stream_name = self.selected_stream_name.get()
+        streams = resolve_streams(timeout=2.0, name=stream_name)
+        if not streams:
+            self.console_log(f"⚠️ Stream '{stream_name}' not found.")
+            self.receiving = False
+            self.runplot = False
+            self.file_name_entry.config(state='normal')
+            self.stop_receive_btn.config(state=tk.DISABLED)
+            self.receive_btn.config(state=tk.NORMAL)
+            return
+
+        selected_stream = next((s for s in streams if s.name == stream_name), streams[0])
+
         #time.sleep(0.5)
-        self.inlet = StreamInlet(streams[0]);
+        self.inlet = StreamInlet(selected_stream)
         self.inlet.open_stream()
         info = self.inlet.get_sinfo()
         fs = int(info.sfreq)
@@ -484,30 +538,7 @@ class StimulatorApp:
         self.receive_btn.config(state=tk.DISABLED)
         #self.detect_button.config(state=tk.DISABLED)
 
-        analysis_cfg = {
-            "freq": self.freq_var.get(),
-            "pw": self.pw_var.get(),
-            "gap": self.gap_var.get(),
-            "amp": self.amp_var.get(),
-            "burst_interval_default": self.burst_interval_var.get(),
-            "burst_interval_stim": self.BstInter_var.get(),
-            "num_pulses": self.num_pulses_var.get(),
-            "mode": self.mode_var.get(),
-            "file_name": self.file_name_var.get(),
-            "ta_erna": float(self.ta_erna.get()),
-            "tb_erna": float(self.tb_erna.get()),
-            "ta_plot": float(self.ta_var.get()),
-            "tb_plot": float(self.tb_var.get()),
-            "ya_plot": float(self.ya_var.get()),
-            "yb_plot": float(self.yb_var.get()),
-            "selected_channel": self.selected_channel_name.get() if hasattr(self, "selected_channel_name") else "unknown",
-            "bp_filter_applied": self.bp_filter_var.get() if hasattr(self, "bp_filter_var") else False,
-            "bp_low": float(self.bp_f1.get()) if hasattr(self, "bp_f1") else 0.0,
-            "bp_high": float(self.bp_f2.get()) if hasattr(self, "bp_f2") else 0.0,
-            "bp_order": int(self.bp_n.get()) if hasattr(self, "bp_n") else 2,
-            "arti_amp": int(self.arti_amp_var.get()) if hasattr(self, "arti_amp_var") else int(Config.arti_amp),
-            "rectify": self.Rectify_var.get() if hasattr(self, "Rectify_var") else False,
-        }
+        analysis_cfg = self._build_analysis_cfg_snapshot()
 
         # ERNA Detection
         def receive_loop():
@@ -523,7 +554,7 @@ class StimulatorApp:
             finally:
                 self.console_log("✅ Finished ERNA analysis.")
     
-        self.receive_thread = threading.Thread(target=receive_loop)
+        self.receive_thread = threading.Thread(target=receive_loop, daemon=True)
         self.receive_thread.start()
     
     def stop_receiving_chunks(self):
@@ -566,13 +597,7 @@ class StimulatorApp:
         self.ax.grid(True)
         #self.ax.set_xlabel("t (s)", fontname='Helvetica',fontsize=9)
         self.ax.set_ylabel("Amp (µA)", fontname='Helvetica',fontsize=self.fonts_label)
-        
-        for label in self.ax.get_xticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
-        for label in self.ax.get_yticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
+        self._apply_axis_font(self.ax)
             
         self.fig.subplots_adjust(left=0.12, right=0.98, top=0.95, bottom=0.2)
 
@@ -609,12 +634,7 @@ class StimulatorApp:
         
         #self.event_ax.set_xlabel("t (s)", fontname='Helvetica',fontsize=9)
         self.event_ax.set_ylabel("Amp (µA)", fontname='Helvetica',fontsize=self.fonts_label)
-        for label in self.event_ax.get_xticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
-        for label in self.event_ax.get_yticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
+        self._apply_axis_font(self.event_ax)
         self.event_fig.subplots_adjust(left=0.12, right=0.97, top=0.95, bottom=0.15)
         
         self.event_canvas = FigureCanvasTkAgg(self.event_fig, master=self.plot_event)
@@ -645,12 +665,7 @@ class StimulatorApp:
         
         #self.event_ax.set_xlabel("t (s)", fontname='Helvetica',fontsize=9)
         self.amp_ax.set_ylabel("Amp (µA)", fontname='Helvetica',fontsize=self.fonts_label)
-        for label in self.amp_ax.get_xticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
-        for label in self.amp_ax.get_yticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
+        self._apply_axis_font(self.amp_ax)
         self.amp_fig.subplots_adjust(left=0.15, right=0.98, top=0.95, bottom=0.17)
         
         self.amp_canvas = FigureCanvasTkAgg(self.amp_fig, master=self.plot_amp)
@@ -688,13 +703,7 @@ class StimulatorApp:
         self.event_ax.set_xlim(-ta, tb)
         self.event_ax.set_ylim(-ya, yb)
         self.event_ax.set_ylabel("Amp (µA)", fontname='Helvetica', fontsize=self.fonts_label)
-    
-        for label in self.event_ax.get_xticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
-        for label in self.event_ax.get_yticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
+        self._apply_axis_font(self.event_ax)
     
         if self.event_buffer:
             fa, fb, order = self.bp_f1.get(), self.bp_f2.get(), self.bp_n.get()
@@ -783,13 +792,7 @@ class StimulatorApp:
         self.amp_ax.grid(True)
         self.amp_ax.set_facecolor('none')
         self.amp_ax.set_ylabel("Amp (µA)", fontname='Helvetica', fontsize=self.fonts_label)
-    
-        for label in self.amp_ax.get_xticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
-        for label in self.amp_ax.get_yticklabels():
-            label.set_fontname("Helvetica")
-            label.set_fontsize(self.fonts_label)
+        self._apply_axis_font(self.amp_ax)
     
         if self.amp_erna_list:
             # Always keep only the last 50 entries
@@ -964,7 +967,7 @@ class StimulatorApp:
     
             self.console_log("GA optimization complete.")
     
-        threading.Thread(target=ga_loop).start()
+        threading.Thread(target=ga_loop, daemon=True).start()
         self.start_ga_btn.config(state=tk.DISABLED)
     
     def apply_arti_amp(self):
@@ -1000,55 +1003,53 @@ class StimulatorApp:
         
     
     def detect_streams(self):
+        def apply_detection_results(streams):
+            self.streams = streams
+            self.detected_streams = [s.name for s in streams]
+            if not self.detected_streams:
+                self.console_log("⚠️ No streams found.")
+                return
+
+            self.selected_stream_name.set(self.detected_streams[0])
+            self._populate_option_menu(self.stream_menu, self.selected_stream_name, self.detected_streams, self.on_stream_selected)
+
+            self.console_log(f"✅ Found {len(self.detected_streams)} streams.")
+            self.on_stream_selected()
+
         def do_detection():
             try:
                 self.console_log("🔍 Detecting LSL streams...")
                 print('*******************************')
                 
-                streams = resolve_streams();
-                self.streams = streams
+                streams = resolve_streams()
                 print(streams)
-                self.detected_streams = [s.name for s in streams];
-                if not self.detected_streams:
-                    self.console_log("⚠️ No streams found.");
-                    return
-    
-                # Update stream menu
-                self.selected_stream_name.set(self.detected_streams[0])
-                self.stream_menu['menu'].delete(0, 'end')
-                for name in self.detected_streams:
-                    self.stream_menu['menu'].add_command(label=name, command=tk._setit(self.selected_stream_name, name, self.on_stream_selected))
-    
-                self.console_log(f"✅ Found {len(self.detected_streams)} streams.")
-                self.on_stream_selected()
-                
-    
+                self.root.after(0, lambda s=streams: apply_detection_results(s))
+
             except Exception as e:
                 self.console_log(f"[ERROR] Stream detection failed: {e}")
     
-        threading.Thread(target=do_detection).start()
+        threading.Thread(target=do_detection, daemon=True).start()
     
     
     def on_stream_selected(self, *_):
         stream_name = self.selected_stream_name.get()
         if not stream_name:
             return
-    
-        try:
-            #streams = resolve_streams('name', stream_name)
-            #streams = resolve_streams(f"name='{self.selected_stream_name.get()}'")
-            
-            stream_names = [s.name for s in self.streams]
-            selected_stream_idx = stream_names.index(stream_name)
-            if selected_stream_idx == -1:
-                raise ValueError(f"Stream '{stream_name}' not found.")
 
-            streams=resolve_streams(timeout=2.0);
-            if not streams:
+        inlet = None
+        try:
+            streams = getattr(self, "streams", [])
+            selected_stream = next((s for s in streams if s.name == stream_name), None)
+
+            if selected_stream is None:
+                streams = resolve_streams(timeout=2.0, name=stream_name)
+                selected_stream = next((s for s in streams if s.name == stream_name), streams[0] if streams else None)
+
+            if selected_stream is None:
                 self.console_log(f"⚠️ Stream '{stream_name}' not found.")
                 return
-    
-            inlet = StreamInlet(streams[0])
+
+            inlet = StreamInlet(selected_stream)
             inlet.open_stream()
             info = inlet.get_sinfo()
             ch_info = info.desc.child("channels").child("channel")
@@ -1059,17 +1060,23 @@ class StimulatorApp:
                 ch_info = ch_info.next_sibling()
     
             if not self.detected_channels:
-                self.detected_channels = [f"Ch{i+1}" for i in range(info.channel_count())]
+                self.detected_channels = [f"Ch{i+1}" for i in range(info.n_channels)]
     
             self.selected_detected_channel.set(self.detected_channels[0])
-            self.channel_detect_menu['menu'].delete(0, 'end')
-            for ch in self.detected_channels:
-                self.channel_detect_menu['menu'].add_command(label=ch, command=tk._setit(self.selected_detected_channel, ch))
+            self._populate_option_menu(self.channel_detect_menu, self.selected_detected_channel, self.detected_channels)
     
             self.console_log(f"✅ Channels from '{stream_name}' loaded.")
     
         except Exception as e:
             self.console_log(f"[ERROR] Failed to read channels: {e}")
+
+        finally:
+            if inlet is not None:
+                try:
+                    inlet.close_stream()
+                except Exception:
+                    pass
+
     def reset_all_plots(self):
         # Stop any ongoing plotting
         self.stop_receiving_chunks()
@@ -1216,9 +1223,7 @@ class StimulatorApp:
             
             self.selected_channel_name.set(self.selected_detected_channel.get() )
             
-            self.channel_menu['menu'].delete(0, 'end')
-            for ch in selected:
-                self.channel_menu['menu'].add_command(label=ch, command=tk._setit(self.selected_channel_name, ch))
+            self._populate_option_menu(self.channel_menu, self.selected_channel_name, selected)
     
             self.console_log(f"✅ Updated selected channels: {selected}")
             window.destroy()

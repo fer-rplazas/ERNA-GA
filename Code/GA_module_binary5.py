@@ -27,6 +27,7 @@ gap = 20
 burst_interval = 100
 num_pulses = 2
 ampli = 4500
+
 # Binary lengths
 freq_bits = (len(bin(len(freq_range) - 1)) - 2)
 pw_bits = (len(bin(len(pw_range) - 1)) - 2)

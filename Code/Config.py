@@ -81,15 +81,14 @@ ini_RampEnable = 1 # 1 = Ramp disable, 2 = ramp enable
 ini_SignalType = 1 # normal charge balanced 
 ini_StimOutput = 2 # 2 = normal stim mode; 4 = burst mode
 
-up_amp=800
+up_amp=2000 # μA
 up_burst_interval=100
 up_num_pulses=1
 
 ch1_en_ini = 2 # 2 = enabled
 ch2_en_ini = 1
 
-
-t_before, t_after = 0.1, 0.15#ony for saved trace
+t_before, t_after = 0.1, 0.15 # only for saved trace
 
 
 # set limit [code]: DB$lim/4500;300;300;500;#
