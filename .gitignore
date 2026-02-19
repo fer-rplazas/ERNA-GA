@@ -1,0 +1,9 @@
+__pycache__/
+
+useless/
+GA_LSL_Chunks/
+BrainTest1.0/
+refCode/
+
+*.smr
+*.mat
