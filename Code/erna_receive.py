@@ -503,7 +503,7 @@ def receive_chunks(self, console_log, chunk_queue, fs, is_running, save_dir=None
             ax.plot(t1, amp_pos1, 'ro')
             ax.plot(t2, amp_neg1, 'bo')
             ax.plot(t3, amp_pos2, 'go')
-            ax.text(t1, (amp_pos1 - amp_neg1)*1.1, f"{amp_pos1 - amp_neg1:.1f}", fontsize=16, color='red')
+            ax.text(t1, (amp_pos1 - amp_neg1)*1.1, f"{amp_pos1 - amp_neg1:.1f}", fontsize=18, color='black')
             erna_results.append({
                 "channel": ch_names[channel_indices[i]],
                 "diff": amp_pos1 - amp_neg1,
